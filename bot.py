@@ -1,131 +1,120 @@
+import os
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiohttp import web
 import asyncio
-import logging
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
-# 1. BotFather'dan olgan Tokeningizni yozing
 TOKEN = "8526475774:AAHCkbLaqwbvEremOykACXYwR4b9a4ZC7SA" 
+ADMIN_ID =8865017290  # O'zingizning Telegram ID raqamingiz
 
-# 2. IT Guruhingiz ID raqami (masalan: -1001234567890)
-GROUP_ID = -1003921854512  
+bot = telebot.TeleBot(TOKEN)
 
-class TicketForm(StatesGroup):
-    room = State()
-    name = State()
-    problem = State()
+# Vaqtinchalik saqlash uchun lug'at
+user_data = {}
 
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-
-# Asosiy menyu
 def main_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🛠 Murojaat yuborish")]],
-        resize_keyboard=True
-    )
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("🛠 Murojaat yuborish"))
+    return markup
 
-# /start buyrug'i
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer(
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.send_message(
+        message.chat.id,
         f"Assalomu alaykum, **{message.from_user.full_name}**!\n\n"
         "Kompyuteringizda nosozlik bo'lsa, pastdagi tugmani bosib IT bo'limiga murojaat yuboring.",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
-# Murojaatni boshlash
-@dp.message(F.text == "🛠 Murojaat yuborish")
-async def start_ticket(message: types.Message, state: FSMContext):
-    await state.set_state(TicketForm.room)
-    await message.answer("📍 Iltimos, kompyuter buzilgan **xona raqamini** yuboring (masalan: *304-xona*):", parse_mode="Markdown")
+@bot.message_handler(func=lambda message: message.text == "🛠 Murojaat yuborish")
+def ask_room(message):
+    sent = bot.send_message(message.chat.id, "📍 Iltimos, kompyuter buzilgan **xona raqamini** yuboring (masalan: *304-xona*):", parse_mode="Markdown")
+    bot.register_next_step_handler(sent, process_room)
 
-# Xona raqamini qabul qilish
-@dp.message(TicketForm.room)
-async def process_room(message: types.Message, state: FSMContext):
-    await state.update_data(room=message.text)
-    await state.set_state(TicketForm.name)
-    await message.answer("👤 Iltimos, **Ism va familiyangizni** kiriting:")
+def process_room(message):
+    user_data[message.from_user.id] = {"room": message.text}
+    sent = bot.send_message(message.chat.id, "👤 Iltimos, **Ism va familiyangizni** kiriting:")
+    bot.register_next_step_handler(sent, process_name)
 
-# Ismni qabul qilish
-@dp.message(TicketForm.name)
-async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await state.set_state(TicketForm.problem)
-    await message.answer("⚠️ Kompyuterda qanday **muammo** borligini qisqacha yozib yuboring (masalan: *Internet ishlamayapti*):")
+def process_name(message):
+    user_data[message.from_user.id]["name"] = message.text
+    sent = bot.send_message(message.chat.id, "⚠️ Kompyuterda qanday **muammo** borligini qisqacha yozib yuboring:")
+    bot.register_next_step_handler(sent, process_problem)
 
-# Muammoni qabul qilish va IT guruhiga yuborish
-@dp.message(TicketForm.problem)
-async def process_problem(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    room = data.get("room")
-    name = data.get("name")
-    problem = message.text
+def process_problem(message):
     user_id = message.from_user.id
+    user_data[user_id]["problem"] = message.text
+    
+    data = user_data[user_id]
     username = message.from_user.username
     user_link = f"@{username}" if username else f"ID: {user_id}"
 
-    # IT guruhidagi muhandislar uchun tugma
-    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛠 Qabul qilish", callback_data=f"accept_{user_id}")]
-    ])
+    inline_kb = InlineKeyboardMarkup()
+    inline_kb.add(InlineKeyboardButton("🛠 Qabul qilish", callback_data=f"accept_{user_id}"))
 
-    group_text = (
+    admin_text = (
         f"🚨 **Yangi Kompyuter Nosozligi!**\n\n"
-        f"🏢 **Xona:** {room}\n"
-        f"👤 **Xodim:** {name} ({user_link})\n"
-        f"💬 **Muammo:** {problem}\n\n"
+        f"🏢 **Xona:** {data['room']}\n"
+        f"👤 **Xodim:** {data['name']} ({user_link})\n"
+        f"💬 **Muammo:** {data['problem']}\n\n"
         f"⏳ *Holat: Kutilmoqda...*"
     )
     
     try:
-        # IT guruhiga yuborish
-        await bot.send_message(GROUP_ID, group_text, reply_markup=inline_kb, parse_mode="Markdown")
-        
-        # Xodimga boradigan xabar
-        await message.answer(
+        bot.send_message(ADMIN_ID, admin_text, reply_markup=inline_kb, parse_mode="Markdown")
+        bot.send_message(
+            user_id,
             "📩 **Arizangiz muhandislarga jo'natildi.**\n\n"
             "Arizangiz qabul qilinsa, sizga xabar beramiz!",
             reply_markup=main_menu(),
             parse_mode="Markdown"
         )
     except Exception as e:
-        logging.error(f"Xatolik: {e}")
-        await message.answer("❌ Xatolik yuz berdi. Bot IT guruhiga xabar yubora olmadi. Bot guruhga qo'shilganini va GROUP_ID to'g'riligini tekshiring.")
-    
-    await state.clear()
+        bot.send_message(user_id, "❌ Xatolik yuz berdi. Iltimos keyinroq qayta urinib ko'ring.")
 
-# Muhandis guruhda "Qabul qilish" tugmasini bosganda
-@dp.callback_query(F.data.startswith("accept_"))
-async def accept_ticket(callback: types.CallbackQuery):
-    it_worker_name = callback.from_user.full_name
-    user_id = int(callback.data.split("_")[1])
+@bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
+def callback_accept(call):
+    it_worker_name = call.from_user.full_name
+    user_id = int(call.data.split("_")[1])
     
-    # Guruhdagi xabarni yangilash
-    new_text = callback.message.text.replace(
+    new_text = call.message.text.replace(
         "⏳ *Holat: Kutilmoqda...*", 
-        f"✅ **Holat:** Muhandis {it_worker_name} tomonidan qabul qilindi!"
+        f"✅ **Holat:** Qabul qilindi ({it_worker_name})"
     )
     
-    await callback.message.edit_text(new_text, parse_mode="Markdown")
-    await callback.answer("Ariza qabul qilindi!")
+    bot.edit_message_text(new_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    bot.answer_callback_query(call.id, "Ariza qabul qilindi!")
 
-    # Xodimga shaxsiy xabar yuborish (Arizangiz qabul qilindi deb)
     try:
-        await bot.send_message(
+        bot.send_message(
             chat_id=user_id,
             text=f"✅ **Arizangiz qabul qilindi!**\n\n👨‍💻 Muhandis **{it_worker_name}** yo'lda, tez orada xonangizga yetib boradi.",
             parse_mode="Markdown"
         )
     except Exception as e:
-        logging.error(f"Xodimga xabar yuborishda xatolik: {e}")
+        print(f"Xatolik: {e}")
+
+# Render uchun veb-server qismi
+async def handle(request):
+    return web.Response(text="Bot ishlayapti!")
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000)))
+    await site.start()
 
 async def main():
-    await dp.start_polling(bot)
+    asyncio.create_task(web_server())
+    # Botni polling qilish
+    while True:
+        try:
+            bot.infinity_polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
